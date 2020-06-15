@@ -1,0 +1,24 @@
+<RCC>
+    <qresource prefix="/">
+        <file>images/copy.png</file>
+        <file>images/cut.png</file>
+        <file>images/new.png</file>
+        <file>images/open.png</file>
+        <file>images/paste.png</file>
+        <file>images/save.png</file>
+        <file>images/drive.png</file>
+        <file>images/stop-32.ico</file>
+        <file>images/logo.png</file>
+        <file>images/encrypt.png</file>
+        <file>images/keyset.png</file>
+        <file>images/decrypt.png</file>
+        <file>images/restore.png</file>
+        <file>images/incognito.png</file>
+        <file>images/autorcm.png</file>
+        <file>images/resize.png</file>
+        <file>images/close-window-32.ico</file>
+        <file>images/save_advanced.png</file>
+        <file>images/emunand.png</file>
+        <file>images/format.png</file>
+    </qresource>
+</RCC>

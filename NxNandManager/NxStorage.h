@@ -1,185 +1,213 @@
-#pragma once
-#include <windows.h>
-#include <Wincrypt.h>
-#include <iostream>
-#include "Shlwapi.h"
-#include <string>
-#include "utils.h"
+/*
+ * Copyright (c) 2019 eliboa
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
-using namespace std;
+#ifndef __NxStorage_h__
+#define __NxStorage_h__
 
-#define BUFSIZE   0x40000
-#define MD5LEN	16
-#define INVALID   1000
-#define BOOT0	 1001
-#define BOOT1	 1002
-#define RAWNAND	  1003
-#define PARTITION 1005
-#define UNKNOWN   1004
-#define NX_GPT_FIRST_LBA 1
-#define NX_GPT_NUM_BLOCKS 33
-#define NX_EMMC_BLOCKSIZE 512
-#define GPT_PART_NAME_LEN 36
-#define DEFAULT_BUFF_SIZE 0x40000
+extern bool isdebug;
+#include <fileapi.h>
+#include <openssl/sha.h>
+#include "res/utils.h"
+#include "res/types.h"
+#include "res/fat32.h"
+#include "res/mbr.h"
+#include "res/progress_info.h"
+#include "NxHandle.h"
+#include "NxPartition.h"
+#include "NxCrypto.h"
+#include "lib/ZipLib/ZipFile.h"
+#include "lib/ZipLib/streams/memstream.h"
+#include "lib/ZipLib/methods/Bzip2Method.h"
+
+typedef struct MagicOffsets MagicOffsets;
+struct MagicOffsets {
+    u64 offset;
+    const char* magic;
+    u64 size;
+    int type;
+    float fw;
+};
 
 
-
-typedef unsigned char u8;
-typedef unsigned short u16;
-typedef unsigned int u32;
-typedef unsigned long long int u64;
-typedef char s8;
-
+// GUID Partition Table structures
 typedef struct _GptHeader
 {
-	u64 signature;
-	u32 revision;
-	u32 size;
-	u32 crc32;
-	u32 res1;
-	u64 my_lba;
-	u64 alt_lba;
-	u64 first_use_lba;
-	u64 last_use_lba;
-	u8 disk_guid[0x10];
-	u64 part_ent_lba;
-	u32 num_part_ents;
-	u32 part_ent_size;
-	u32 part_ents_crc32;
-	u8 res2[420];
+    u64 signature;
+    u32 revision;
+    u32 size;
+    u32 c_crc32;
+    u32 res1;
+    u64 my_lba;
+    u64 alt_lba;
+    u64 first_use_lba;
+    u64 last_use_lba;
+    u8 disk_guid[0x10];
+    u64 part_ent_lba;
+    u32 num_part_ents;
+    u32 part_ent_size;
+    u32 part_ents_crc32;
+    u8 res2[420];
 } GptHeader;
 
 typedef struct _GptEntry
 {
-	u8 type_guid[0x10];
-	u8 part_guid[0x10];
-	u64 lba_start;
-	u64 lba_end;
-	u64 attrs;
-	u16 name[36];
+    u8 type_guid[0x10];
+    u8 part_guid[0x10];
+    u64 lba_start;
+    u64 lba_end;
+    u64 attrs;
+    u16 name[36];
 } GptEntry;
 
-
-typedef struct GptPartition GptPartition;
-struct GptPartition {
-	u32 lba_start;
-	u32 lba_end;
-	u64 attrs;
-	s8 name[37];
-	GptPartition *next;
-};
-
-typedef struct MagicOffsets MagicOffsets;
-struct MagicOffsets {
-	u64 offset;
-	const char* magic;
-	u64 size;
-	int type;
-	float fw;
-};
-
-typedef struct NxPartition NxPartition;
-struct NxPartition {
-	s8 name[37];
-	u64 size;
-};
-
-typedef struct NxSplitFile NxSplitFile;
-struct NxSplitFile {
-	u64 offset;
-	u64 size;
-	wchar_t file_path[_MAX_PATH];
-	NxSplitFile *next = NULL;
-};
-
-typedef struct NxHandle NxHandle;
-struct NxHandle {
-	HANDLE h;
-	wchar_t path[_MAX_PATH];
-	u64 off_start = 0;
-	u64 off_end = 0;
-	u64 off_max = 0;
-	u64 readAmount = 0;
-};
-
-static MagicOffsets mgkOffArr[] =
+struct NxStorageType
 {
-	// { offset, magic, size, type, firwmare }
-	// BOOT0 => Look for boot_data_version + block_size_log2 + page_size_log2
-	{ 0x0530, "010021000E00000009000000", 12, BOOT0, 0},
-	// BOOT1 => Look for PK11 magic
-	{ 0x13B4, "504B3131", 4, BOOT1, 1},
-	{ 0x13F0, "504B3131", 4, BOOT1, 2},
-	{ 0x1424, "504B3131", 4, BOOT1, 3},
-	{ 0x12E8, "504B3131", 4, BOOT1, 4},
-	{ 0x12D0, "504B3131", 4, BOOT1, 5},
-	{ 0x12F0, "504B3131", 4, BOOT1, 6},
-	{ 0x40AF8,"504B3131", 4, BOOT1, 7},
-    { 0x40ADC,"504B3131", 4, BOOT1, 8},
-	// RAWNAND -> Look for GPT partition
-	{ 0x200, "4546492050415254", 8, RAWNAND, 0 }
+    int type;
+    const char* name;
 };
 
-static NxPartition partInfoArr[] =
+typedef struct NxSystemTitles NxSystemTitles;
+struct NxSystemTitles {
+    const char fw_version[48];
+    const char nca_filename[40];
+};
+
+typedef struct NxKeys NxKeys;
+struct NxKeys {
+    bool set = false;
+    char crypt0[33];
+    char tweak0[33];
+    char crypt1[33];
+    char tweak1[33];
+    char crypt2[33];
+    char tweak2[33];
+    char crypt3[33];
+    char tweak3[33];
+};
+
+typedef struct {
+    uint32_t package1loader_hash;
+    uint32_t secmon_hash;
+    uint32_t nx_bootloader_hash;
+    uint32_t _0xC;
+    char build_timestamp[0x0E];
+    uint8_t _0x1E;
+    uint8_t version;
+} package1ldr_header_t;
+
+typedef struct {
+    int major = -1;
+    int minor = -1;
+    int micro = -1;
+} firmware_version_t;
+
+enum EmunandType { unknown, fileBasedAMS, fileBasedSXOS, rawBased };
+
+class NxHandle;
+class NxCrypto;
+class NxPartition;
+
+class NxStorage 
 {
-	{ "PRODINFO",			   0x003FBC00  },
-	{ "PRODINFOF",			  0x00400000  },
-	{ "BCPKG2-1-Normal-Main",   0x00800000  },
-	{ "BCPKG2-2-Normal-Sub",	0x00800000  },
-	{ "BCPKG2-3-SafeMode-Main", 0x00800000  },
-	{ "BCPKG2-4-SafeMode-Sub",  0x00800000  },
-	{ "BCPKG2-5-Repair-Main",   0x00800000  },
-	{ "BCPKG2-6-Repair-Sub",	0x00800000  },
-	{ "SAFE",				   0x04000000  },
-	{ "SYSTEM",				 0xA0000000  },
-	{ "USER",				   0x680000000 }
-};
+    public:
+        NxStorage(const char* storage = nullptr);
+        ~NxStorage();
 
-class NxStorage {
-public:
-	NxStorage(const char* storage=NULL);
+    private:
+        // Private member variables
+        u64 m_size;
+        u64 m_backupGPT = 0;
+        bool b_cryptoSet = false;
+        bool b_isSplitted = false;
+        bool m_keySet_set = false;
+        u64 m_freeSpace = 0;
 
-	void ClearHandles();
-	BOOL GetSplitFile(NxSplitFile* pFile, const char* partition);
-	BOOL GetSplitFile(NxSplitFile* pFile, u64 offset);
-	int DumpToStorage(NxStorage *out, const char* partition, u64* readAmount, u64* writeAmount, u64* bytesToWrite, HCRYPTHASH* hHash = NULL);
-	int RestoreFromStorage(NxStorage *in, const char* partition, u64* readAmount, u64* writeAmount, u64* bytesToWrite);
-	const char* GetNxStorageTypeAsString();
-	void InitStorage();
-	int GetMD5Hash(HCRYPTHASH *hHash, u64* readAmount = NULL);
-	std::string GetMD5Hash(const char* partition = NULL);
-	u64 IsValidPartition(const char * part_name, u64 part_size = NULL);
-	bool setAutoRCM(bool enable);
-	bool DEBUG_MODE;
+        // Specific vars to handle copy        
+        std::ofstream *p_ofstream;
+        BYTE *m_buffer;
+        int m_buff_size;
+        u64 bytes_count;
+        u32 m_gpt_lba_start, m_user_lba_start, m_user_lba_end, m_user_new_size, m_user_total_size, m_user_new_bckgpt, cpy_cl_count_in, cpy_cl_count_out;
+        unsigned char gpt_header_buffer[0x200];
 
-private:
-	BOOL ParseGpt(unsigned char* gptHeader);
+    
+        std::vector<const char*> v_cpy_partitions;
 
-public:
-	const char* path;
-	LPWSTR pathLPWSTR;
-	int type;
-	u64 size;
-	u64 raw_size;
-	u64 fileDiskTotalBytes;
-	u64 fileDiskFreeBytes;
-	BOOL isDrive;
-	BOOL backupGPTfound;
-	DISK_GEOMETRY pdg;
-	GptPartition *firstPartion;
-	int partCount;
-	BOOL autoRcm;
-	s8 partitionName[37];
-	BOOL isSplitted = FALSE;
-	NxSplitFile *lastSplitFile;
-	int splitFileCount = 0;
-	HCRYPTPROV h_Prov = 0;
-	HCRYPTHASH h_Hash = 0;
-	NxHandle handle;
-	HANDLE handle_out;
-	u64 bytesToRead;
-	u64 bytesAmount;
+        // Private member functions
+        void setStorageInfo(int partition = 0);
+
+    public:
+        // Public member variables
+        wchar_t m_path[MAX_PATH];        
+        int type = INVALID;
+        s8 fw_version[48];
+        firmware_version_t firmware_version;
+        firmware_version_t firmware_version_boot0;
+        s8 serial_number[18];
+        s8 deviceId[21];
+        std::string macAddress;
+        //unsigned char bootloader_ver = 0;
+        int bootloader_ver = 0;
+        bool autoRcm = false;
+        bool exFat_driver = false;
+        NxKeys keys;
+
+        u32 mmc_b0_lba_start = 0;
+        bool b_MayBeNxStorage = false;
+        
+        NxHandle *nxHandle = nullptr;
+        std::vector<NxPartition *> partitions;
+        NxCrypto *nxCrypto;
+        bool stopWork = false;
+
+        // Getters
+        u64 backupGPT() { return m_backupGPT; }
+        u64 size() { return m_size; }
+        bool isCryptoSet() { return m_keySet_set; }
+        bool isSplitted();
+        bool isEncrypted();
+        bool isDrive();
+        bool badCrypto();
+        bool isNxStorage();
+        bool partitionExists(const char* partition_name);
+
+        // Public methods                
+        int setKeys(const char* keyset_path);
+        const char* getNxTypeAsStr(int type = 0);
+        NxPartition* getNxPartition();
+        NxPartition* getNxPartition(int part_type);
+        NxPartition* getNxPartition(const char* part_name);
+        int getNxTypeAsInt(const char* type = nullptr);
+        bool isSinglePartType(int type = 0);
+
+        int dump(NxHandle *outHandle, params_t params, void(*updateProgress)(ProgressInfo) = nullptr);
+        int dumpControl(params_t par);
+        int restore(NxStorage* input, params_t params, void(*updateProgress)(ProgressInfo) = nullptr);
+
+        bool setAutoRcm(bool enable);
+        int applyIncognito();
+        void clearHandles();
+        std::string getFirmwareVersion(firmware_version_t *fmv = nullptr);
+        void setFirmwareVersion(firmware_version_t *fwv, const char* fwv_string);
+        int fwv_cmp(firmware_version_t fwv1, firmware_version_t fwv2);
+        int createMmcEmuNand(const char* mmc_path, void(*updateProgress)(ProgressInfo), const char* boot0_path, const char* boot1_path);
+        int createFileBasedEmuNand(EmunandType type, const char* volume_path, void(*updateProgress)(ProgressInfo), const char* boot0_path, const char* boot1_path);
+        int userAbort(){stopWork = false; return ERR_USER_ABORT;}
 };
 
 std::string BuildChecksum(HCRYPTHASH hHash);
+std::string ListPhysicalDrives();
 
+#endif
